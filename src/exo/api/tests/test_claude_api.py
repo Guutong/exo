@@ -131,6 +131,48 @@ class TestClaudeRequestToInternal:
         assert params.input[1].role == "assistant"
         assert params.input[2].role == "user"
 
+    async def test_request_with_inline_system_message(self):
+        # Some clients/proxies inline a system-role message in messages[]
+        # instead of the top-level system field. It must be accepted and
+        # folded into instructions rather than 422'd.
+        request = ClaudeMessagesRequest.model_validate(
+            {
+                "model": "claude-3-opus",
+                "max_tokens": 100,
+                "messages": [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "system", "content": "You are terse."},
+                    {"role": "user", "content": "Hi again"},
+                ],
+            }
+        )
+        params = await claude_request_to_text_generation(request)
+
+        assert params.instructions == "You are terse."
+        # System message is folded out of the conversation turns.
+        assert isinstance(params.input, list)
+        assert len(params.input) == 2
+        assert [m.role for m in params.input] == ["user", "user"]
+
+    async def test_inline_system_merges_with_top_level_system(self):
+        request = ClaudeMessagesRequest.model_validate(
+            {
+                "model": "claude-3-opus",
+                "max_tokens": 100,
+                "system": "Top level.",
+                "messages": [
+                    {"role": "system", "content": "Inline."},
+                    {"role": "user", "content": "Hello"},
+                ],
+            }
+        )
+        params = await claude_request_to_text_generation(request)
+
+        assert params.instructions == "Top level.\nInline."
+        assert isinstance(params.input, list)
+        assert len(params.input) == 1
+        assert params.input[0].role == "user"
+
     async def test_request_with_optional_parameters(self):
         request = ClaudeMessagesRequest(
             model=ModelId("claude-3-opus"),

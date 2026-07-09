@@ -19,7 +19,10 @@ class ClaudeToolDefinition(BaseModel, frozen=True):
 
 
 # Type aliases
-ClaudeRole = Literal["user", "assistant"]
+# The Anthropic Messages API only allows "user"/"assistant" in messages[] (system
+# is a top-level field), but some clients (and proxies in front of Claude Code)
+# inline a "system" role message. Accept it here and fold it into instructions.
+ClaudeRole = Literal["user", "assistant", "system"]
 ClaudeStopReason = Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
 
 
