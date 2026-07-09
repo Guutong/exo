@@ -127,6 +127,29 @@ async def claude_request_to_text_generation(
     # Convert messages to input
     input_messages: list[InputMessage] = []
     for msg in request.messages:
+        # Fold any inline system-role message into instructions rather than
+        # treating it as a conversation turn (the real Anthropic API forbids
+        # system in messages[], but some clients/proxies still send it).
+        if msg.role == "system":
+            if isinstance(msg.content, str):
+                system_text = msg.content
+            else:
+                system_text = "".join(
+                    block.text
+                    for block in msg.content
+                    if isinstance(block, ClaudeTextBlock)
+                )
+            system_text = _strip_volatile_headers(system_text)
+            instructions = (
+                system_text
+                if instructions is None
+                else f"{instructions}\n{system_text}"
+            )
+            chat_template_messages.append(
+                {"role": "system", "content": InputMessageContent(system_text)}
+            )
+            continue
+
         if isinstance(msg.content, str):
             input_messages.append(
                 InputMessage(role=msg.role, content=InputMessageContent(msg.content))
