@@ -22,7 +22,12 @@ from mlx_lm.models.deepseek_v4 import (
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 from exo.shared.types.memory import Memory
-from exo.worker.engines.mlx.constants import CACHE_GROUP_SIZE, KV_CACHE_BITS
+from exo.worker.engines.mlx.constants import (
+    CACHE_GROUP_SIZE,
+    KV_CACHE_BITS,
+    PREFILL_ABORT_METAL_ACTIVE_FRACTION,
+    PREFILL_ABORT_SYSTEM_USED_FRACTION,
+)
 from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.runner.bootstrap import logger
 
@@ -555,6 +560,20 @@ def get_memory_used_percentage() -> float:
     mem = psutil.virtual_memory()
     # percent is 0-100
     return float(mem.percent / 100)
+
+
+def memory_pressure_critical() -> bool:
+    """True when letting the KV cache grow further risks a Metal OOM abort of the
+    runner process, or system-wide wired-memory exhaustion (kernel panic)."""
+    if get_memory_used_percentage() >= PREFILL_ABORT_SYSTEM_USED_FRACTION:
+        return True
+    if not mx.metal.is_available():
+        return False
+    max_recommended_bytes = int(mx.device_info()["max_recommended_working_set_size"])
+    return (
+        mx.get_active_memory()
+        > PREFILL_ABORT_METAL_ACTIVE_FRACTION * max_recommended_bytes
+    )
 
 
 def make_kv_cache(

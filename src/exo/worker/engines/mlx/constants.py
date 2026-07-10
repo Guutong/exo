@@ -13,5 +13,10 @@ KV_CACHE_BITS: int | None = None
 
 DEFAULT_TOP_LOGPROBS: int = 5
 
+# Abort prefill with a clean error (instead of letting Metal OOM abort the runner
+# process) once memory pressure on any node crosses these thresholds.
+PREFILL_ABORT_METAL_ACTIVE_FRACTION: float = 0.9
+PREFILL_ABORT_SYSTEM_USED_FRACTION: float = 0.92
+
 # TODO: We should really make this opt-in, but Kimi requires trust_remote_code=True
 TRUST_REMOTE_CODE: bool = True

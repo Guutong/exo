@@ -47,6 +47,7 @@ from exo.worker.engines.mlx.cache import (
     has_non_kv_caches,
     is_non_trimmable_cache_entry,
     make_kv_cache,
+    memory_pressure_critical,
     snapshot_ssm_states,
 )
 from exo.worker.engines.mlx.constants import (
@@ -60,6 +61,7 @@ from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.engines.mlx.utils_mlx import (
     apply_chat_template,
     fix_unmatched_think_end_tokens,
+    mx_any,
     mx_barrier,
     system_prompt_token_count,
 )
@@ -152,6 +154,29 @@ def patch_embed_tokens(
 
 class PrefillCancelled(BaseException):
     """Raised when prefill is cancelled via the progress callback."""
+
+
+class PrefillOutOfMemory(PrefillCancelled):
+    """Raised when prefill is aborted because a node is about to run out of memory.
+
+    Subclasses PrefillCancelled so existing cleanup paths (pipeline flags, cache
+    teardown) apply, but callers report it to the client as an error instead of
+    silently finishing.
+    """
+
+
+def abort_prefill_if_memory_critical(group: mx.distributed.Group | None) -> None:
+    """Abort prefill on all ranks together if any node is critically low on memory.
+
+    Uses a collective so every rank makes the same decision, preventing one rank
+    from raising while another continues into a distributed collective (deadlock).
+    """
+    if mx_any(memory_pressure_critical(), group):
+        raise PrefillOutOfMemory(
+            "Prompt processing aborted: node memory nearly exhausted while growing "
+            "the KV cache. The prompt is too large for the cluster's available "
+            "memory; shorten the context or add nodes."
+        )
 
 
 def _has_pipeline_communication_layer(model: Model):

@@ -33,6 +33,8 @@ from exo.worker.engines.mlx.disaggregated.serve import run_prefill_for_request
 from exo.worker.engines.mlx.generator.batch_generate import ExoBatchGenerator
 from exo.worker.engines.mlx.generator.generate import (
     PrefillCancelled,
+    PrefillOutOfMemory,
+    abort_prefill_if_memory_critical,
     mlx_generate,
     warmup_inference,
 )
@@ -188,6 +190,14 @@ class SequentialGenerator(Engine):
             while (parsed := next(output_generator, None)) is not None:
                 output.append((task.task_id, parsed))
 
+        except PrefillOutOfMemory as e:
+            logger.warning(f"Task {task.task_id} aborted: {e}")
+            self._send_error(task, e)
+            output.append((task.task_id, FinishedResponse()))
+            self._active = None
+            if self._queue:
+                self._start_next()
+
         except (StopIteration, PrefillCancelled):
             output.append((task.task_id, FinishedResponse()))
             self._active = None
@@ -234,7 +244,7 @@ class SequentialGenerator(Engine):
             )
         self._active = (task, gen, queue, output_generator)
 
-    def _send_error(self, task: TextGeneration, e: Exception) -> None:
+    def _send_error(self, task: TextGeneration, e: BaseException) -> None:
         if self.device_rank == 0:
             self.event_sender.send(
                 ChunkGenerated(
@@ -269,6 +279,7 @@ class SequentialGenerator(Engine):
             if self.should_cancel(task.task_id):
                 raise PrefillCancelled()
 
+            abort_prefill_if_memory_critical(self.group)
             self.agree_on_tasks()
 
         tokens_since_cancel_check = self.check_for_cancel_every
@@ -405,11 +416,18 @@ class BatchGenerator(Engine):
         if not self._queue:
             self.agree_on_tasks()
 
+        aborted: list[tuple[TaskId, FinishedResponse]] = []
+
         # Submit any queued tasks to the engine
         while self._queue and len(self._active_tasks) < EXO_MAX_CONCURRENT_REQUESTS:
             task = self._queue.popleft()
             try:
                 uid = self._start_task(task)
+            except PrefillOutOfMemory as e:
+                logger.warning(f"Task {task.task_id} aborted: {e}")
+                self._send_error(task, e)
+                aborted.append((task.task_id, FinishedResponse()))
+                continue
             except PrefillCancelled:
                 continue
             except Exception as e:
@@ -434,7 +452,7 @@ class BatchGenerator(Engine):
             self._active_tasks[uid] = (task, queue, output_generator)
 
         if not self._gen.has_work:
-            return self._apply_cancellations()
+            return itertools.chain(aborted, self._apply_cancellations())
 
         results = self._gen.step()
 
@@ -462,7 +480,7 @@ class BatchGenerator(Engine):
             lambda chunk: (
                 not isinstance(chunk[1], GenerationChunk) or self.device_rank == 0
             ),
-            itertools.chain(output, self._apply_cancellations()),
+            itertools.chain(aborted, output, self._apply_cancellations()),
         )
 
     def _apply_cancellations(
@@ -493,7 +511,7 @@ class BatchGenerator(Engine):
         self._cancelled_tasks.clear()
         return iter(results)
 
-    def _send_error(self, task: TextGeneration, e: Exception) -> None:
+    def _send_error(self, task: TextGeneration, e: BaseException) -> None:
         if self.device_rank == 0:
             self.event_sender.send(
                 ChunkGenerated(
@@ -528,6 +546,7 @@ class BatchGenerator(Engine):
             if self.should_cancel(task.task_id):
                 raise PrefillCancelled()
 
+            abort_prefill_if_memory_critical(self.group)
             self.agree_on_tasks()
 
         tokens_since_cancel_check = self.check_for_cancel_every
