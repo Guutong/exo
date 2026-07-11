@@ -28,11 +28,18 @@ from exo.worker.engines.mlx.constants import (
     PREFILL_ABORT_METAL_ACTIVE_FRACTION,
     PREFILL_ABORT_SYSTEM_USED_FRACTION,
 )
+from exo.worker.engines.mlx.quantized_batch_cache import (
+    install_batch_quantized_kv_cache,
+)
 from exo.worker.engines.mlx.types import KVCacheType, Model
 from exo.worker.runner.bootstrap import logger
 
 if TYPE_CHECKING:
     from exo.worker.engines.mlx.vision import MediaRegion
+
+# Enable batching of quantized per-request KV caches (used when EXO_KV_BITS
+# is set); without this, mlx-lm's _merge_caches rejects QuantizedKVCache.
+install_batch_quantized_kv_cache()
 
 
 # Fraction of device memory above which LRU eviction kicks in.

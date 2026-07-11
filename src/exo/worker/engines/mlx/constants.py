@@ -11,8 +11,22 @@ def _fraction_from_environment(variable_name: str, default: float) -> float:
     return float(raw_value)
 
 
+def _optional_bits_from_environment(
+    variable_name: str, default: int | None
+) -> int | None:
+    raw_value = os.environ.get(variable_name)
+    if raw_value is None:
+        return default
+    if raw_value.strip().lower() in ("", "none", "0"):
+        return None
+    return int(raw_value)
+
+
 KV_GROUP_SIZE: int | None = 32
-KV_BITS: int | None = None
+# Quantize the KV cache to this many bits (roughly 16/bits x context headroom).
+# Off by default; enable per deployment with e.g. EXO_KV_BITS=8. Must be set
+# identically on every node of the cluster.
+KV_BITS: int | None = _optional_bits_from_environment("EXO_KV_BITS", None)
 ATTENTION_KV_BITS: int | None = 4
 MAX_TOKENS: int = 32168
 MAX_KV_SIZE: int | None = 3200
