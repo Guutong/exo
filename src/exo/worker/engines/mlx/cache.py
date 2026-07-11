@@ -565,15 +565,26 @@ def get_memory_used_percentage() -> float:
 def memory_pressure_critical() -> bool:
     """True when letting the KV cache grow further risks a Metal OOM abort of the
     runner process, or system-wide wired-memory exhaustion (kernel panic)."""
-    if get_memory_used_percentage() >= PREFILL_ABORT_SYSTEM_USED_FRACTION:
+    system_used_fraction = get_memory_used_percentage()
+    if system_used_fraction >= PREFILL_ABORT_SYSTEM_USED_FRACTION:
+        logger.warning(
+            f"Memory pressure critical: system memory {system_used_fraction:.0%} used"
+            f" (threshold {PREFILL_ABORT_SYSTEM_USED_FRACTION:.0%})"
+        )
         return True
     if not mx.metal.is_available():
         return False
     max_recommended_bytes = int(mx.device_info()["max_recommended_working_set_size"])
-    return (
-        mx.get_active_memory()
-        > PREFILL_ABORT_METAL_ACTIVE_FRACTION * max_recommended_bytes
-    )
+    active_bytes = mx.get_active_memory()
+    if active_bytes > PREFILL_ABORT_METAL_ACTIVE_FRACTION * max_recommended_bytes:
+        logger.warning(
+            f"Memory pressure critical: Metal active memory"
+            f" {active_bytes / 2**30:.2f} GiB exceeds"
+            f" {PREFILL_ABORT_METAL_ACTIVE_FRACTION:.0%} of recommended working set"
+            f" {max_recommended_bytes / 2**30:.2f} GiB"
+        )
+        return True
+    return False
 
 
 def make_kv_cache(
