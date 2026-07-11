@@ -525,6 +525,11 @@ class BatchGenerator(Engine):
             )
 
     def _start_task(self, task: TextGeneration) -> int:
+        # Refuse to admit a new prompt while memory is already critical: starting
+        # another prefill alongside resident KV caches can push Metal past its
+        # limit mid-chunk, where the per-chunk guard cannot intervene, killing
+        # the runner process outright.
+        abort_prefill_if_memory_critical(self.group)
         _check_for_debug_prompts(task.task_params)
         prompt = apply_chat_template(self.tokenizer, task.task_params)
 
