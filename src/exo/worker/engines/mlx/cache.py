@@ -43,16 +43,15 @@ install_batch_quantized_kv_cache()
 
 
 # Fraction of device memory above which LRU eviction kicks in.
-# Smaller machines need more aggressive eviction.
+# A model that fills most of a small machine's memory already sits above a
+# too-low threshold at idle, which evicts every prefix-cache entry on arrival
+# and disables prefix reuse entirely. Keep the floor at 0.80: the prefill
+# memory guard (PREFILL_ABORT_* thresholds) is the crash backstop, not this.
 def _default_memory_threshold() -> float:
     total_gb = Memory.from_bytes(psutil.virtual_memory().total).in_gb
     if total_gb >= 128:
         return 0.85
-    if total_gb >= 64:
-        return 0.80
-    if total_gb >= 32:
-        return 0.75
-    return 0.70
+    return 0.80
 
 
 _MEMORY_THRESHOLD = float(
