@@ -8,6 +8,8 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import psutil
+
 if TYPE_CHECKING:
     from exo.worker.engines.mlx.vision import VisionProcessor
 
@@ -814,8 +816,18 @@ def set_wired_limit_for_model(model_size: Memory):
             "MB. This can be slow. See the documentation for possible work-arounds: "
             "https://github.com/ml-explore/mlx-lm/tree/main#large-models"
         )
-    mx.set_wired_limit(max_rec_size.in_bytes)
-    logger.info(f"Wired limit set to {max_rec_size}.")
+    # On small machines the OS-recommended working set leaves almost nothing
+    # for the OS and exo's own processes: Metal wires transient buffers up to
+    # this limit, and a 16GB node ends up with <0.5GB available mid-prefill.
+    # Keep at least 5GiB of the machine un-wireable (the OS pages Metal
+    # buffers beyond the limit instead of failing), unless that would not fit
+    # the model shard itself plus working room.
+    total_memory = Memory.from_bytes(psutil.virtual_memory().total)
+    reserve_floor = total_memory - Memory.from_gb(5.0)
+    model_floor = Memory.from_bytes(int(model_size.in_bytes * 1.2))
+    wired_limit = min(max_rec_size, max(reserve_floor, model_floor))
+    mx.set_wired_limit(wired_limit.in_bytes)
+    logger.info(f"Wired limit set to {wired_limit}.")
 
 
 def mlx_cleanup(
