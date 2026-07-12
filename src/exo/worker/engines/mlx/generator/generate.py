@@ -50,6 +50,7 @@ from exo.worker.engines.mlx.cache import (
     is_non_trimmable_cache_entry,
     make_kv_cache,
     memory_pressure_critical,
+    release_metal_pool_if_tight,
     snapshot_ssm_states,
 )
 from exo.worker.engines.mlx.constants import (
@@ -298,6 +299,8 @@ def pipeline_parallel_prefill(
                     f" wired={wired_bytes / 2**30:.2f}GiB"
                     f" runner_rss={runner_rss_bytes / 2**30:.2f}GiB"
                 )
+
+                release_metal_pool_if_tight()
 
                 if distributed_prompt_progress_callback is not None:
                     distributed_prompt_progress_callback()

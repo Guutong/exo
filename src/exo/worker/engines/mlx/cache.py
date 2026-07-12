@@ -568,6 +568,32 @@ def get_memory_used_percentage() -> float:
     return float(mem.percent / 100)
 
 
+def release_metal_pool_if_tight() -> None:
+    """Return MLX's buffer pool to the OS when the combined Metal footprint
+    (active + pooled) nears the wired limit.
+
+    The pool holds transients from earlier prefill chunks in stale size
+    classes that a later, larger-context chunk cannot always reuse, so the
+    allocator grows active memory on top of the pool. Both count against the
+    wired limit: on memory-tight nodes this OOMs Metal mid-chunk, which the
+    between-chunk abort guard (which only sees active memory) cannot catch.
+    """
+    if not mx.metal.is_available():
+        return
+    pool_bytes = mx.get_cache_memory()
+    if pool_bytes == 0:
+        return
+    max_recommended_bytes = int(mx.device_info()["max_recommended_working_set_size"])
+    footprint_bytes = mx.get_active_memory() + pool_bytes
+    if footprint_bytes > PREFILL_ABORT_METAL_ACTIVE_FRACTION * max_recommended_bytes:
+        logger.info(
+            f"Releasing {pool_bytes / 2**30:.2f} GiB Metal buffer pool"
+            f" (footprint {footprint_bytes / 2**30:.2f} GiB near wired limit"
+            f" {max_recommended_bytes / 2**30:.2f} GiB)"
+        )
+        mx.clear_cache()
+
+
 def memory_pressure_critical() -> bool:
     """True when letting the KV cache grow further risks a Metal OOM abort of the
     runner process, or system-wide wired-memory exhaustion (kernel panic)."""
