@@ -44,6 +44,7 @@ from exo.worker.engines.mlx.cache import (
     KVPrefixCache,
     copy_snapshot_entry,
     encode_prompt,
+    get_memory_used_percentage,
     has_non_kv_caches,
     is_non_trimmable_cache_entry,
     make_kv_cache,
@@ -275,6 +276,13 @@ def pipeline_parallel_prefill(
                 mx.eval([c.state for c in _prompt_cache])  # type: ignore
                 mx.clear_cache()
                 processed += chunk_size
+                logger.info(
+                    f"[R{rank}] chunk {i + 1}/{n_real}"
+                    f" cache={type(_prompt_cache[0]).__name__}"
+                    f" metal_active={mx.get_active_memory() / 2**30:.2f}GiB"
+                    f" metal_pool={mx.get_cache_memory() / 2**30:.2f}GiB"
+                    f" system={get_memory_used_percentage():.0%}"
+                )
 
                 if distributed_prompt_progress_callback is not None:
                     distributed_prompt_progress_callback()
