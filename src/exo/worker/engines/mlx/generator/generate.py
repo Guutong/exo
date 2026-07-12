@@ -265,6 +265,11 @@ def pipeline_parallel_prefill(
 
             for i in range(n_real):
                 chunk_size = real_chunk_sizes[i]
+                if i > 0 and chunk_size != real_chunk_sizes[i - 1]:
+                    # The final (shorter) chunk allocates fresh transients with
+                    # new shapes; the pooled full-size buffers cannot serve them
+                    # and would sit on top of the new set. Drop them first.
+                    mx.clear_cache()
                 model(
                     prompt[processed : processed + chunk_size][None],
                     cache=_prompt_cache,
