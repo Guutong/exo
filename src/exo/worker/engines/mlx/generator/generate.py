@@ -6,6 +6,7 @@ import uuid
 from typing import Callable, Generator, cast, get_args
 
 import mlx.core as mx
+import psutil
 from mlx_lm.generate import (
     maybe_quantize_kv_cache,
     stream_generate,
@@ -276,12 +277,18 @@ def pipeline_parallel_prefill(
                 mx.eval([c.state for c in _prompt_cache])  # type: ignore
                 mx.clear_cache()
                 processed += chunk_size
+                virtual_memory = psutil.virtual_memory()
+                wired_bytes = getattr(virtual_memory, "wired", 0)
+                runner_rss_bytes = psutil.Process().memory_info().rss
                 logger.info(
                     f"[R{rank}] chunk {i + 1}/{n_real}"
                     f" cache={type(_prompt_cache[0]).__name__}"
                     f" metal_active={mx.get_active_memory() / 2**30:.2f}GiB"
                     f" metal_pool={mx.get_cache_memory() / 2**30:.2f}GiB"
                     f" system={get_memory_used_percentage():.0%}"
+                    f" available={virtual_memory.available / 2**30:.2f}GiB"
+                    f" wired={wired_bytes / 2**30:.2f}GiB"
+                    f" runner_rss={runner_rss_bytes / 2**30:.2f}GiB"
                 )
 
                 if distributed_prompt_progress_callback is not None:
