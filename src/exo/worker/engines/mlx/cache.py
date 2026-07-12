@@ -573,6 +573,13 @@ def memory_pressure_critical() -> bool:
     runner process, or system-wide wired-memory exhaustion (kernel panic)."""
     system_used_fraction = get_memory_used_percentage()
     if system_used_fraction >= PREFILL_ABORT_SYSTEM_USED_FRACTION:
+        # MLX keeps freed buffers in an internal pool that still counts as used
+        # system memory (an earlier aborted prefill can leave gigabytes pooled,
+        # making every later request look critical). Return the pool to the OS
+        # and re-measure before declaring an emergency.
+        mx.clear_cache()
+        system_used_fraction = get_memory_used_percentage()
+    if system_used_fraction >= PREFILL_ABORT_SYSTEM_USED_FRACTION:
         logger.warning(
             f"Memory pressure critical: system memory {system_used_fraction:.0%} used"
             f" (threshold {PREFILL_ABORT_SYSTEM_USED_FRACTION:.0%})"

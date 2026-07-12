@@ -193,6 +193,9 @@ class SequentialGenerator(Engine):
         except PrefillOutOfMemory as e:
             logger.warning(f"Task {task.task_id} aborted: {e}")
             self._send_error(task, e)
+            # Return the aborted prefill's buffers to the OS immediately;
+            # MLX's pool otherwise keeps them counted as used system memory.
+            mx.clear_cache()
             output.append((task.task_id, FinishedResponse()))
             self._active = None
             if self._queue:
@@ -426,6 +429,9 @@ class BatchGenerator(Engine):
             except PrefillOutOfMemory as e:
                 logger.warning(f"Task {task.task_id} aborted: {e}")
                 self._send_error(task, e)
+                # Return the aborted prefill's buffers to the OS immediately;
+                # MLX's pool otherwise keeps them counted as used system memory.
+                mx.clear_cache()
                 aborted.append((task.task_id, FinishedResponse()))
                 continue
             except PrefillCancelled:
