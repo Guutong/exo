@@ -268,6 +268,12 @@ def pipeline_parallel_prefill(
                     cache=_prompt_cache,
                 )
                 quantize_cache_fn(_prompt_cache)
+                # Materialize the cache each chunk (as stream_generate does).
+                # Without this, quantized caches stay lazy and keep their fp16
+                # source arrays alive as graph dependencies, so prefill memory
+                # grows as if KV quantization were off.
+                mx.eval([c.state for c in _prompt_cache])  # type: ignore
+                mx.clear_cache()
                 processed += chunk_size
 
                 if distributed_prompt_progress_callback is not None:
