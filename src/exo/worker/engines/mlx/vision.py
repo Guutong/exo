@@ -16,12 +16,11 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from mlx_lm.tokenizer_utils import TokenizerWrapper
-from mlx_vlm.prompt_utils import get_message_json
-from mlx_vlm.utils import load_image_processor
 from PIL import Image
-from safetensors import safe_open
-from transformers import AutoImageProcessor
 
+# mlx_vlm / transformers / safetensors(framework="pt") transitively import
+# torch (~1GB+ resident per runner process). Import them lazily inside the
+# vision-only code paths so text-only models never pay that memory cost.
 from exo.download.download_utils import build_model_path
 from exo.shared.models.model_cards import VisionCardConfig
 from exo.shared.types.common import ModelId
@@ -145,6 +144,8 @@ def _format_vlm_messages(
         parts: list[dict[str, Any]] = content  # type: ignore
         text_parts = [str(p["text"]) for p in parts if p.get("type") == "text"]  # type: ignore
         n_images = sum(1 for p in parts if p.get("type") in ("image", "image_url"))
+        from mlx_vlm.prompt_utils import get_message_json
+
         result: dict[str, Any] = get_message_json(
             model_type, " ".join(text_parts), role, num_images=n_images
         )
@@ -340,6 +341,9 @@ class VisionEncoder:
             repo = str(build_model_path(ModelId(processor_repo)))
         else:
             repo = str(self._model_path)
+        from mlx_vlm.utils import load_image_processor
+        from transformers import AutoImageProcessor
+
         try:
             image_proc = load_image_processor(repo)
         except ValueError:
@@ -358,6 +362,8 @@ class VisionEncoder:
         logger.info(f"HF image processor loaded from {repo}")
 
     def _load_weights_from_separate_repo(self) -> None:
+        from safetensors import safe_open
+
         safetensors_files = list(self._model_path.glob("*.safetensors"))
         if not safetensors_files:
             raise FileNotFoundError(f"No safetensors files found in {self._model_path}")
@@ -415,6 +421,8 @@ class VisionEncoder:
         )
 
     def _load_weights_from_model_repo(self) -> None:
+        from safetensors import safe_open
+
         safetensors_files = sorted(self._model_path.glob("*.safetensors"))
         if not safetensors_files:
             raise FileNotFoundError(f"No safetensors files found in {self._model_path}")
