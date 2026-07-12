@@ -43,8 +43,13 @@ DEFAULT_TOP_LOGPROBS: int = 5
 PREFILL_ABORT_METAL_ACTIVE_FRACTION: float = _fraction_from_environment(
     "EXO_PREFILL_ABORT_METAL_ACTIVE_FRACTION", 0.9
 )
+# 0.95: on 16GB nodes the exo Python processes (~3GB, torch import included)
+# plus macOS leave a loaded model idling near 88% system-used, so 0.92 rejected
+# prompts the cluster comfortably fits. Per-chunk cache eval + pool clearing
+# removed the mid-chunk fp16 spikes that made higher thresholds crash before,
+# and the Metal-active guard remains the hard backstop for wired memory.
 PREFILL_ABORT_SYSTEM_USED_FRACTION: float = _fraction_from_environment(
-    "EXO_PREFILL_ABORT_SYSTEM_USED_FRACTION", 0.92
+    "EXO_PREFILL_ABORT_SYSTEM_USED_FRACTION", 0.95
 )
 
 # TODO: We should really make this opt-in, but Kimi requires trust_remote_code=True
