@@ -120,6 +120,17 @@ def test_trim_reduces_visible_length() -> None:
     assert merged.offset.tolist() == [5]
 
 
+def test_make_mask_broadcasts_against_5d_quantized_scores() -> None:
+    merged = BatchQuantizedKVCache.merge(
+        [_filled_quantized_cache(4, seed=20), _filled_quantized_cache(10, seed=21)]
+    )
+    mask = merged.make_mask(1)
+    # Quantized SDPA scores are (B, n_kv_heads, n_repeats, L_q, L_k).
+    scores_shape = (2, HEADS, 8, 1, merged.size())
+    broadcast = mx.broadcast_to(mask, scores_shape)
+    assert broadcast.shape == scores_shape
+
+
 def test_merge_of_empty_caches_makes_empty_batch() -> None:
     merged = BatchQuantizedKVCache.merge(
         [

@@ -244,12 +244,18 @@ class BatchQuantizedKVCache(_CacheBase):
         self, n: int, return_array: bool = False, window_size: int | None = None
     ) -> mx.array:
         del return_array  # accepted for BatchKVCache API parity
-        return _causal_mask(
+        mask = _causal_mask(
             n,
             offset=self._idx,
             left_padding=self.left_padding,
             window_size=window_size,
         )
+        # The quantized SDPA computes 5-D scores of shape
+        # (B, n_kv_heads, n_repeats, L_q, L_k); insert a broadcast axis so the
+        # (B, 1, L_q, L_k) causal mask aligns with them.
+        if mask.ndim == 4:
+            mask = mx.expand_dims(mask, 1)
+        return mask
 
     def filter(self, batch_indices: list[int] | mx.array) -> None:
         """In-place filter to keep just the given batch rows."""
