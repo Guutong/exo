@@ -273,9 +273,12 @@ def pipeline_parallel_prefill(
                 # Materialize the cache each chunk (as stream_generate does).
                 # Without this, quantized caches stay lazy and keep their fp16
                 # source arrays alive as graph dependencies, so prefill memory
-                # grows as if KV quantization were off.
+                # grows as if KV quantization were off. Do NOT mx.clear_cache()
+                # here: each chunk's transients must be reused from the MLX pool.
+                # Returning them to Metal keeps the pages wired anyway, and the
+                # next chunk then wires a fresh set, growing wired memory by the
+                # transient size every chunk until the machine chokes.
                 mx.eval([c.state for c in _prompt_cache])  # type: ignore
-                mx.clear_cache()
                 processed += chunk_size
                 virtual_memory = psutil.virtual_memory()
                 wired_bytes = getattr(virtual_memory, "wired", 0)
