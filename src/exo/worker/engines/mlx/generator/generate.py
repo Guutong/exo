@@ -269,15 +269,15 @@ def pipeline_parallel_prefill(
                     prompt[processed : processed + chunk_size][None],
                     cache=_prompt_cache,
                 )
-                quantize_cache_fn(_prompt_cache)
-                # Materialize the cache each chunk (as stream_generate does).
-                # Without this, quantized caches stay lazy and keep their fp16
-                # source arrays alive as graph dependencies, so prefill memory
-                # grows as if KV quantization were off. Do NOT mx.clear_cache()
-                # here: each chunk's transients must be reused from the MLX pool.
-                # Returning them to Metal keeps the pages wired anyway, and the
-                # next chunk then wires a fresh set, growing wired memory by the
-                # transient size every chunk until the machine chokes.
+                # Prefill runs on the fp16 cache and quantizes ONCE after the
+                # loop (see post-loop below), not per chunk: the quantized-cache
+                # attention path has no fused kernel, so it materializes full
+                # attention-score matrices of shape (chunk x context-so-far)
+                # per layer - a different, growing allocation every chunk that
+                # the buffer pool cannot reuse (observed ~1GiB of new wired
+                # memory per chunk). The fp16 path uses fused SDPA with small,
+                # constant-shape transients. Materialize the cache each chunk
+                # (as stream_generate does) so chunk graphs don't accumulate.
                 mx.eval([c.state for c in _prompt_cache])  # type: ignore
                 processed += chunk_size
                 virtual_memory = psutil.virtual_memory()
@@ -318,6 +318,9 @@ def pipeline_parallel_prefill(
     assert _prompt_cache is not None
     with mx.stream(generation_stream):
         mx.eval([c.state for c in _prompt_cache])  # type: ignore
+    # The cache was just converted fp16 -> quantized (quantize_cache_fn in the
+    # post-loop); release the now-unreferenced fp16 buffers.
+    mx.clear_cache()
 
     # Final callback matching generate_step
     prompt_progress_callback(total, total)
