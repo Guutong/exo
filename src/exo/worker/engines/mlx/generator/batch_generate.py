@@ -11,7 +11,7 @@ from mlx_lm.generate import (
 from mlx_lm.generate import (
     generation_stream,
 )
-from mlx_lm.models.cache import RotatingKVCache
+from mlx_lm.models.cache import QuantizedKVCache, RotatingKVCache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.tokenizer_utils import StreamingDetokenizer, TokenizerWrapper
 
@@ -178,6 +178,26 @@ class ExoBatchGenerator:
                 prompt_tokens = remaining_tokens
         else:
             cache = make_kv_cache(self.model)
+
+        if (
+            prefix_hit_length > 0
+            and len(prompt_tokens) > 2048
+            and any(isinstance(entry, QuantizedKVCache) for entry in cache)
+        ):
+            # A long prefill resumed on a quantized cache runs the unfused
+            # attention path, whose (chunk x context) score matrices exhaust
+            # Metal on small machines. Cheaper and safer to redo the whole
+            # prefill on a fresh fp16 cache (fused SDPA) and quantize at the
+            # end - the hit only saved us prefix_hit_length tokens anyway.
+            logger.info(
+                f"Ignoring quantized prefix-cache hit of {prefix_hit_length} tokens:"
+                f" {len(prompt_tokens)} tokens still need prefilling"
+            )
+            cache = make_kv_cache(self.model)
+            prompt_tokens = all_prompt_tokens
+            prefix_hit_length = 0
+            matched_index = None
+            is_exact_hit = False
 
         seed = task_params.seed if task_params.seed is not None else 42
         mx.random.seed(seed)
