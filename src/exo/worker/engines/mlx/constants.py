@@ -54,3 +54,13 @@ PREFILL_ABORT_SYSTEM_USED_FRACTION: float = _fraction_from_environment(
 
 # TODO: We should really make this opt-in, but Kimi requires trust_remote_code=True
 TRUST_REMOTE_CODE: bool = True
+
+# Skip loading vision-tower weights even when the model card advertises vision.
+# Multimodal checkpoints ship the vision encoder in bf16 (~0.8 GiB for Qwen3.6),
+# which on 16GB nodes can push Metal active memory past the prefill-abort
+# threshold before any tokens are processed. Text-only deployments can reclaim
+# that memory with EXO_DISABLE_VISION=1 (image inputs are then rejected).
+DISABLE_VISION: bool = os.environ.get("EXO_DISABLE_VISION", "").strip().lower() in (
+    "1",
+    "true",
+)

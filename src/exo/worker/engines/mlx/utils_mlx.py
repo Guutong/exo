@@ -30,7 +30,7 @@ from mlx_lm.models.deepseek_v3 import DeepseekV3Model
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 from exo.shared.models.model_cards import ModelId
-from exo.worker.engines.mlx.constants import TRUST_REMOTE_CODE
+from exo.worker.engines.mlx.constants import DISABLE_VISION, TRUST_REMOTE_CODE
 
 try:
     from mlx_lm.tokenizer_utils import load_tokenizer
@@ -207,6 +207,13 @@ def load_mlx_items(
     mx.clear_cache()
 
     vision_config = bound_instance.bound_shard.model_card.vision
+
+    if vision_config is not None and DISABLE_VISION:
+        logger.info(
+            "EXO_DISABLE_VISION set — skipping vision weights for "
+            f"{bound_instance.bound_shard.model_card.model_id}"
+        )
+        vision_config = None
 
     if vision_config is not None:
         from exo.worker.engines.mlx.vision import VisionProcessor
