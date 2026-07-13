@@ -150,9 +150,16 @@ def maybe_load_mtp_head(
     if not is_last_pipeline_rank:
         return False
     if not mtp_available(model):
+        text_model = _text_model_of(model)
         logger.info(
             "EXO_MTP_DRAFT set but model has no MTP-capable TextModel "
-            f"(model_type={getattr(model, 'model_type', '?')}) - skipping MTP"
+            f"(model_type={getattr(model, 'model_type', '?')}"
+            f" model_class={type(model).__module__}.{type(model).__name__}"
+            f" mro={[c.__name__ for c in type(model).__mro__]}"
+            f" has_language_model={hasattr(model, 'language_model')}"
+            f" text_model_class={type(text_model).__module__}.{type(text_model).__name__}"
+            f" text_model_has_mtp_forward={hasattr(text_model, 'mtp_forward')}"
+            f" text_model_has_mtp={hasattr(text_model, 'mtp')}) - skipping MTP"
         )
         return False
 
