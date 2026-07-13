@@ -344,6 +344,7 @@ class BatchGenerator(Engine):
     event_sender: MpSender[Event]
     check_for_cancel_every: int = 50
     vision_processor: VisionProcessor | None = None
+    mtp_enabled: bool = False
 
     _cancelled_tasks: set[TaskId] = field(default_factory=set, init=False)
     _maybe_queue: list[TextGeneration] = field(default_factory=list, init=False)
@@ -367,6 +368,7 @@ class BatchGenerator(Engine):
             group=self.group,
             kv_prefix_cache=self.kv_prefix_cache,
             vision_processor=self.vision_processor,
+            is_drafting_rank=self.mtp_enabled,
         )
 
     def warmup(self):

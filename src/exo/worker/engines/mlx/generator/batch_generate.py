@@ -9,6 +9,7 @@ from mlx_lm.generate import (
     BatchGenerator as MlxBatchGenerator,
 )
 from mlx_lm.generate import (
+    GenerationBatch,
     generation_stream,
 )
 from mlx_lm.models.cache import QuantizedKVCache, RotatingKVCache
@@ -32,7 +33,11 @@ from exo.worker.engines.mlx.cache import (
     encode_prompt,
     make_kv_cache,
 )
-from exo.worker.engines.mlx.constants import DEFAULT_TOP_LOGPROBS, MAX_TOKENS
+from exo.worker.engines.mlx.constants import (
+    DEFAULT_TOP_LOGPROBS,
+    MAX_TOKENS,
+    MTP_DRAFT_TOKENS,
+)
 from exo.worker.engines.mlx.generator.generate import (
     ban_token_ids,
     eos_ids_from_tokenizer,
@@ -41,7 +46,9 @@ from exo.worker.engines.mlx.generator.generate import (
     prefill,
 )
 from exo.worker.engines.mlx.generator.remote_prefill import remote_prefill
+from exo.worker.engines.mlx.mtp import MtpAcceptStats, mtp_decode_step
 from exo.worker.engines.mlx.patches.opt_batch_gen import (
+    BatchTopKLogprobs,
     set_needs_topk,
     take_ready_topk,
 )
@@ -97,9 +104,16 @@ class ExoBatchGenerator:
     group: mx.distributed.Group | None
     kv_prefix_cache: KVPrefixCache | None
     vision_processor: VisionProcessor | None = None
+    # True only on the pipeline rank that loaded an MTP head (normally the
+    # last stage) - see exo.worker.engines.mlx.mtp.maybe_load_mtp_head. Every
+    # rank still enters the MTP decode path together when EXO_MTP_DRAFT > 0
+    # (a pipelined forward is a collective op), this flag only controls
+    # whether *this* rank drafts locally vs. receives broadcast draft ids.
+    is_drafting_rank: bool = False
 
     _mlx_gen: MlxBatchGenerator = field(init=False)
     _active_tasks: dict[int, _EngineTask] = field(default_factory=dict, init=False)
+    _mtp_stats: MtpAcceptStats = field(default_factory=MtpAcceptStats, init=False)
 
     def __post_init__(self) -> None:
         self._mlx_gen = MlxBatchGenerator(
@@ -356,10 +370,18 @@ class ExoBatchGenerator:
             any(t.task_params.logprobs for t in self._active_tasks.values()),
         )
         _step_tic = time.perf_counter()
-        _, responses = self._mlx_gen.next()
-        _next_elapsed = time.perf_counter() - _step_tic
 
-        topk = take_ready_topk(gb)
+        if self._mtp_eligible(gb):
+            responses = self._mtp_next(gb)
+            # The precomputed top-k buffer is only populated by the (bypassed)
+            # patched GenerationBatch._step; never reuse it for MTP-produced
+            # tokens - extract_top_logprobs falls back to computing on demand.
+            topk = BatchTopKLogprobs()
+        else:
+            _, responses = self._mlx_gen.next()
+            topk = take_ready_topk(gb)
+
+        _next_elapsed = time.perf_counter() - _step_tic
 
         results: list[tuple[int, GenerationResponse]] = []
 
@@ -500,6 +522,114 @@ class ExoBatchGenerator:
             )
 
         return results
+
+    def _mtp_eligible(self, gb: GenerationBatch) -> bool:
+        """Whether this step should run through the MTP decode path.
+
+        Requires EXO_MTP_DRAFT > 0 (checked first and cheaply so every other
+        check is skipped entirely when MTP is off - the zero-behavior-change
+        requirement), exactly one task mid-decode and nothing mid-prefill
+        (batch-size-1 only - the joint multi-token verify forward's sequence
+        length must be identical on every pipeline rank, which the existing
+        task-agreement protocol only guarantees at the *task* level, not at
+        this finer "which step type" granularity - see the module report for
+        this residual risk), and no logits_processors configured for that
+        task (repetition/presence/frequency penalty - see mtp.py's
+        known-limitations note for why those aren't supported by the MTP
+        path yet).
+        """
+        if MTP_DRAFT_TOKENS <= 0:
+            return False
+        if len(gb.uids) != 1:
+            return False
+        if len(self._mlx_gen._prompt_batch) > 0 or self._mlx_gen._unprocessed_sequences:
+            return False
+        processors = gb.logits_processors
+        return not (processors and processors[0])
+
+    def _mtp_next(self, gb: GenerationBatch) -> list[GenerationBatch.Response]:
+        """Run one MTP speculative-decode round for the single active task,
+        mimicking the shape of ``GenerationBatch.next()``'s return value so
+        the rest of ``step()`` doesn't need to know MTP ran at all.
+        """
+        uid = gb.uids[0]
+        task_params = self._active_tasks[uid].task_params
+        temp = task_params.temperature if task_params.temperature is not None else 0.7
+        top_p = task_params.top_p if task_params.top_p is not None else 1.0
+        min_p = task_params.min_p if task_params.min_p is not None else 0.05
+        top_k = task_params.top_k if task_params.top_k is not None else 0
+
+        next_tokens = gb._next_tokens
+        next_logprobs = gb._next_logprobs
+        assert next_tokens is not None and isinstance(next_logprobs, mx.array), (
+            "MTP round requires an already-primed GenerationBatch"
+        )
+
+        with mx.stream(generation_stream):
+            result = mtp_decode_step(
+                self.model,
+                cast(KVCacheType, gb.prompt_cache),
+                self.model.make_mtp_cache(),
+                last_committed_token_id=int(next_tokens[0].item()),
+                last_committed_logprobs=next_logprobs[0],
+                temp=temp,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=1,
+                max_draft=MTP_DRAFT_TOKENS,
+                is_drafting_rank=self.is_drafting_rank,
+                group=self.group,
+            )
+
+        self._mtp_stats.record(result)
+        self._mtp_stats.maybe_log()
+
+        num_tokens = gb._num_tokens[0]
+        matcher_state = gb._matcher_states[0]
+        state_machine = gb.state_machines[0]
+        max_tokens = gb.max_tokens[0]
+
+        responses: list[GenerationBatch.Response] = []
+        fed_tokens: list[int] = []
+        stopped = False
+        for token_id, logprobs in zip(result.token_ids, result.logprobs, strict=True):
+            fed_tokens.append(token_id)
+            num_tokens += 1
+            finish_reason: str | None = "length" if num_tokens >= max_tokens else None
+            matcher_state, match_sequence, current_state = state_machine.match(
+                matcher_state, token_id
+            )
+            if match_sequence is not None and current_state is None:
+                finish_reason = "stop"
+            responses.append(
+                GenerationBatch.Response(
+                    uid=uid,
+                    token=token_id,
+                    logprobs=logprobs,
+                    finish_reason=finish_reason,
+                    current_state=current_state,
+                    match_sequence=match_sequence,
+                    prompt_cache=None,
+                    all_tokens=None,
+                )
+            )
+            if finish_reason is not None:
+                stopped = True
+                break
+
+        gb.tokens[0].extend(fed_tokens)
+        gb._num_tokens[0] = num_tokens
+        gb._matcher_states[0] = matcher_state
+
+        if stopped:
+            gb.filter([])
+        else:
+            gb._next_tokens = mx.array([result.next_last_committed_token_id])
+            gb._next_logprobs = result.next_last_committed_logprobs[None]
+            mx.async_eval(gb._next_tokens, gb._next_logprobs)
+
+        return responses
 
     def cancel(self, uids: list[int]) -> None:
         self._mlx_gen.remove(uids)
