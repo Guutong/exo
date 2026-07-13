@@ -208,6 +208,10 @@ class RotatingKVCache(_BaseCache):
         ...
 
 class ArraysCache(_BaseCache):
+    # Set in __new__; snapshot of (conv_state, ssm_state) for MTP draft
+    # rollback (see qwen3_5.GatedDeltaNet.__call__'s n_confirmed handling,
+    # mlx-lm PR #990 / the Guutong/mlx-lm MTP fork).
+    rollback_state: Optional[tuple[mx.array, mx.array]]
     def __init__(self, size, left_padding: Optional[List[int]] = ...) -> None: ...
     def __setitem__(self, idx, value):  # -> None:
         ...

@@ -279,11 +279,11 @@ class SequenceStateMachine:
     def __init__(self, transitions=..., initial=...) -> None: ...
     def __deepcopy__(self, memo):  # -> SequenceStateMachine:
         ...
-    def make_state(self):  # -> tuple[str, Any, dict[Any, Any]]:
-        ...
+    def make_state(self) -> tuple[object, object, object]: ...
     @staticmethod
-    def match(state, x):  # -> tuple[tuple[Any, Any | None, Any], Any | None, Any]:
-        ...
+    def match(
+        state: tuple[object, object, object], x: int
+    ) -> tuple[tuple[object, object, object], Optional[List[int]], Optional[str]]: ...
 
 class PromptProcessingBatch:
     """
@@ -388,7 +388,7 @@ class GenerationBatch:
     _next_logprobs: mx.array | List[mx.array]
     _token_context: List[Any]
     _num_tokens: List[int]
-    _matcher_states: List[Any]
+    _matcher_states: List[tuple[object, object, object]]
 
     def __init__(
         self,
