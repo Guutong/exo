@@ -136,6 +136,7 @@ def maybe_load_mtp_head(
     model: Model,
     *,
     is_last_pipeline_rank: bool,
+    model_id: str | None = None,
 ) -> bool:
     """Attach and populate the MTP head from a sidecar file, if enabled.
 
@@ -144,26 +145,44 @@ def maybe_load_mtp_head(
     ``False``) unless ``EXO_MTP_DRAFT`` > 0, ``model`` supports MTP, and a
     sidecar ``mtp.safetensors`` (or the checkpoint-declared equivalent) is
     present next to the model's shards.
+
+    The sidecar is never part of ``model.safetensors.index.json``, so exo's
+    own shard-aware downloader (which only fetches files listed there) never
+    fetches it - a ``hf_hub_download`` is attempted here as a last resort
+    when it's missing and ``model_id`` is known.
     """
     if MTP_DRAFT_TOKENS <= 0:
         return False
     if not is_last_pipeline_rank:
         return False
     if not mtp_available(model):
-        text_model = _text_model_of(model)
         logger.info(
             "EXO_MTP_DRAFT set but model has no MTP-capable TextModel "
-            f"(model_type={getattr(model, 'model_type', '?')}"
-            f" model_class={type(model).__module__}.{type(model).__name__}"
-            f" mro={[c.__name__ for c in type(model).__mro__]}"
-            f" has_language_model={hasattr(model, 'language_model')}"
-            f" text_model_class={type(text_model).__module__}.{type(text_model).__name__}"
-            f" text_model_has_mtp_forward={hasattr(text_model, 'mtp_forward')}"
-            f" text_model_has_mtp={hasattr(text_model, 'mtp')}) - skipping MTP"
+            f"(model_type={getattr(model, 'model_type', '?')}) - skipping MTP"
         )
         return False
 
     sidecar_path = model_path / MTP_SIDECAR_FILENAME
+    if not sidecar_path.exists() and model_id is not None:
+        logger.info(
+            f"EXO_MTP_DRAFT set, {MTP_SIDECAR_FILENAME} missing from "
+            f"{model_path} - fetching it from {model_id}"
+        )
+        try:
+            from huggingface_hub import (
+                hf_hub_download,  # pyright: ignore[reportUnknownVariableType]
+            )
+
+            _ = hf_hub_download(
+                repo_id=model_id,
+                filename=MTP_SIDECAR_FILENAME,
+                local_dir=model_path,
+            )
+        except Exception:
+            logger.opt(exception=True).info(
+                f"No {MTP_SIDECAR_FILENAME} available for {model_id} - skipping MTP"
+            )
+
     if not sidecar_path.exists():
         logger.info(
             f"EXO_MTP_DRAFT set but no {MTP_SIDECAR_FILENAME} found in "

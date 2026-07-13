@@ -200,7 +200,10 @@ def load_mlx_items(
         tokenizer = get_tokenizer(model_path, bound_instance.bound_shard)
         # Single device = both the first and last (only) pipeline stage.
         mtp_enabled = maybe_load_mtp_head(
-            model_path, cast(Model, model), is_last_pipeline_rank=True
+            model_path,
+            cast(Model, model),
+            is_last_pipeline_rank=True,
+            model_id=str(bound_instance.bound_shard.model_card.model_id),
         )
 
     else:
@@ -298,6 +301,7 @@ def shard_and_load(
                 model_path,
                 cast(Model, model),
                 is_last_pipeline_rank=shard_metadata.is_last_layer,
+                model_id=str(shard_metadata.model_card.model_id),
             )
         case CfgShardMetadata():
             raise ValueError(
