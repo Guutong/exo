@@ -30,7 +30,11 @@ from mlx_lm.models.deepseek_v3 import DeepseekV3Model
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 
 from exo.shared.models.model_cards import ModelId
-from exo.worker.engines.mlx.constants import DISABLE_VISION, TRUST_REMOTE_CODE
+from exo.worker.engines.mlx.constants import (
+    DISABLE_VISION,
+    MTP_DRAFT_TOKENS,
+    TRUST_REMOTE_CODE,
+)
 
 try:
     from mlx_lm.tokenizer_utils import load_tokenizer
@@ -66,6 +70,7 @@ from exo.worker.engines.mlx.auto_parallel import (
     pipeline_auto_parallel,
     tensor_auto_parallel,
 )
+from exo.worker.engines.mlx.mtp import maybe_load_mtp_head
 from exo.worker.engines.mlx.types import Model
 from exo.worker.runner.bootstrap import logger
 
@@ -166,7 +171,9 @@ def load_mlx_items(
     bound_instance: BoundInstance,
     group: mx.distributed.Group | None,
 ) -> Generator[
-    ModelLoadingResponse, None, tuple[Model, TokenizerWrapper, "VisionProcessor | None"]
+    ModelLoadingResponse,
+    None,
+    tuple[Model, TokenizerWrapper, "VisionProcessor | None", bool],
 ]:
     set_wired_limit_for_model(get_weights_size(bound_instance.bound_shard))
 
@@ -191,11 +198,15 @@ def load_mlx_items(
         end_time = time.perf_counter()
         logger.info(f"Time taken to load model: {(end_time - start_time):.2f}s")
         tokenizer = get_tokenizer(model_path, bound_instance.bound_shard)
+        # Single device = both the first and last (only) pipeline stage.
+        mtp_enabled = maybe_load_mtp_head(
+            model_path, cast(Model, model), is_last_pipeline_rank=True
+        )
 
     else:
         logger.info("Starting distributed init")
         start_time = time.perf_counter()
-        model, tokenizer = yield from shard_and_load(
+        model, tokenizer, mtp_enabled = yield from shard_and_load(
             bound_instance.bound_shard,
             group=group,
         )
@@ -235,13 +246,13 @@ def load_mlx_items(
     else:
         vision_processor = None
 
-    return cast(Model, model), tokenizer, vision_processor
+    return cast(Model, model), tokenizer, vision_processor, mtp_enabled
 
 
 def shard_and_load(
     shard_metadata: ShardMetadata,
     group: mx.distributed.Group,
-) -> Generator[ModelLoadingResponse, None, tuple[nn.Module, TokenizerWrapper]]:
+) -> Generator[ModelLoadingResponse, None, tuple[nn.Module, TokenizerWrapper, bool]]:
     model_path = build_model_path(shard_metadata.model_card.model_id)
 
     model, _ = load_model(model_path, lazy=True, strict=False)
@@ -269,14 +280,25 @@ def shard_and_load(
 
     logger.info(f"Group size: {group.size()}, group rank: {group.rank()}")
 
+    mtp_enabled = False
     match shard_metadata:
         case TensorShardMetadata():
             logger.info(f"loading model from {model_path} with tensor parallelism")
             model = yield from tensor_auto_parallel(model, group)
+            if MTP_DRAFT_TOKENS > 0:
+                logger.warning(
+                    "EXO_MTP_DRAFT is set but this shard uses tensor parallelism - "
+                    "MTP is only implemented for pipeline parallelism, skipping"
+                )
         case PipelineShardMetadata():
             logger.info(f"loading model from {model_path} with pipeline parallelism")
             model = yield from pipeline_auto_parallel(model, group, shard_metadata)
             mx.eval(model.parameters())
+            mtp_enabled = maybe_load_mtp_head(
+                model_path,
+                cast(Model, model),
+                is_last_pipeline_rank=shard_metadata.is_last_layer,
+            )
         case CfgShardMetadata():
             raise ValueError(
                 "CfgShardMetadata is not supported for text model loading - "
@@ -292,7 +314,7 @@ def shard_and_load(
     # Synchronize processes before generation to avoid timeout
     mx_barrier(group)
 
-    return model, tokenizer
+    return model, tokenizer, mtp_enabled
 
 
 def get_tokenizer(model_path: Path, shard_metadata: ShardMetadata) -> TokenizerWrapper:
