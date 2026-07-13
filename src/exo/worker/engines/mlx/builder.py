@@ -38,6 +38,7 @@ class MlxBuilder(Builder):
     tokenizer: TokenizerWrapper | None = None
     group: mx.distributed.Group | None = None
     vision_processor: VisionProcessor | None = None
+    mtp_enabled: bool = False
 
     def connect(self, bound_instance: BoundInstance) -> None:
         self.group = initialize_mlx(bound_instance)
@@ -47,6 +48,7 @@ class MlxBuilder(Builder):
             self.inference_model,
             self.tokenizer,
             self.vision_processor,
+            self.mtp_enabled,
         ) = yield from load_mlx_items(bound_instance, self.group)
 
     def close(self) -> None:
@@ -110,4 +112,5 @@ class MlxBuilder(Builder):
                 cancel_receiver=self.cancel_receiver,
                 event_sender=self.event_sender,
                 vision_processor=vision_processor,
+                mtp_enabled=self.mtp_enabled,
             )

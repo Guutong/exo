@@ -181,7 +181,7 @@ def _run_pipeline_device(
             while True:
                 next(gen)
         except StopIteration as stop:
-            model, tokenizer = stop.value
+            model, tokenizer, _ = stop.value
         model = cast(Any, model)
 
         prompt, task = _build_prompt(tokenizer, prompt_tokens)
